@@ -106,7 +106,8 @@ allocator_sorted_list::allocator_sorted_list(
     void* first_block = reinterpret_cast<uint8_t*>(_trusted_memory) + allocator_metadata_size;
     get_first_free(_trusted_memory) = first_block;
 
-    get_block_size(first_block) = space_size - allocator_metadata_size;
+    get_block_size(first_block) = space_size - allocator_metadata_size - block_metadata_size;
+
     get_next_free(first_block) = nullptr;
 }
 
