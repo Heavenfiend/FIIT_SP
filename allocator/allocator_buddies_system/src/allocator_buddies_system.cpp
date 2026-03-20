@@ -3,23 +3,27 @@
 #include "../include/allocator_buddies_system.h"
 
 namespace {
+    inline size_t get_parent_allocator_offset() {
+        size_t offset = sizeof(std::mutex) + sizeof(allocator_dbg_helper*) + sizeof(allocator_with_fit_mode::fit_mode) + sizeof(unsigned char);
+        return (offset + 7) & ~7;
+    }
+
+    inline size_t get_mem_start_offset() {
+        size_t offset = get_parent_allocator_offset() + sizeof(std::pmr::memory_resource*);
+        return (offset + 7) & ~7;
+    }
+
     inline std::mutex* get_mutex(void* ptr) { return reinterpret_cast<std::mutex*>(ptr); }
     inline allocator_dbg_helper** get_logger(void* ptr) { return reinterpret_cast<allocator_dbg_helper**>(reinterpret_cast<char*>(ptr) + sizeof(std::mutex)); }
     inline allocator_with_fit_mode::fit_mode* get_fit_mode(void* ptr) { return reinterpret_cast<allocator_with_fit_mode::fit_mode*>(reinterpret_cast<char*>(ptr) + sizeof(std::mutex) + sizeof(allocator_dbg_helper*)); }
     inline unsigned char* get_k_size(void* ptr) { return reinterpret_cast<unsigned char*>(reinterpret_cast<char*>(ptr) + sizeof(std::mutex) + sizeof(allocator_dbg_helper*) + sizeof(allocator_with_fit_mode::fit_mode)); }
 
     inline std::pmr::memory_resource** get_parent_allocator(void* ptr) {
-        size_t offset = sizeof(std::mutex) + sizeof(allocator_dbg_helper*) + sizeof(allocator_with_fit_mode::fit_mode) + sizeof(unsigned char);
-        offset = (offset + 7) & ~7;
-        return reinterpret_cast<std::pmr::memory_resource**>(reinterpret_cast<char*>(ptr) + offset);
+        return reinterpret_cast<std::pmr::memory_resource**>(reinterpret_cast<char*>(ptr) + get_parent_allocator_offset());
     }
 
     inline char* get_mem_start(void* ptr) {
-        size_t offset = sizeof(std::mutex) + sizeof(allocator_dbg_helper*) + sizeof(allocator_with_fit_mode::fit_mode) + sizeof(unsigned char);
-        offset = (offset + 7) & ~7;
-        offset += sizeof(std::pmr::memory_resource*);
-        offset = (offset + 7) & ~7;
-        return reinterpret_cast<char*>(ptr) + offset;
+        return reinterpret_cast<char*>(ptr) + get_mem_start_offset();
     }
 }
 
@@ -68,7 +72,7 @@ allocator_buddies_system::allocator_buddies_system(
         std::pmr::memory_resource *parent_allocator,
         allocator_with_fit_mode::fit_mode allocate_fit_mode)
 {
-    size_t offset = get_mem_start(nullptr) - static_cast<char*>(nullptr);
+    size_t offset = get_mem_start_offset();
     size_t required_size = offset + free_block_metadata_size;
     if (space_size < required_size) {
         throw std::logic_error("Space size too small");
@@ -218,10 +222,6 @@ std::vector<allocator_test_utils::block_info> allocator_buddies_system::get_bloc
     std::vector<allocator_test_utils::block_info> info;
     buddy_iterator end_it = end();
     for (buddy_iterator it = begin(); it != end_it; ++it) {
-        if (!it.operator*()) {
-            break;
-        }
-        if (it.operator*() >= end_it.operator*()) break;
         allocator_test_utils::block_info block;
         block.block_size = it.size();
         block.is_block_occupied = it.occupied();
@@ -243,7 +243,7 @@ allocator_buddies_system::buddy_iterator allocator_buddies_system::end() const n
 
 bool allocator_buddies_system::buddy_iterator::operator!=(const allocator_buddies_system::buddy_iterator &other) const noexcept
 {
-    return _block != other._block && _block < other._block;
+    return _block != other._block;
 }
 
 size_t allocator_buddies_system::buddy_iterator::size() const noexcept
