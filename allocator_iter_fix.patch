@@ -1,0 +1,21 @@
+--- allocator/allocator_buddies_system/src/allocator_buddies_system.cpp
++++ allocator/allocator_buddies_system/src/allocator_buddies_system.cpp
+@@ -176,17 +176,17 @@
+
+ allocator_buddies_system::buddy_iterator allocator_buddies_system::begin() const noexcept
+ {
+-    char* ptr = reinterpret_cast<char*>(_trusted_memory);
+-    ptr += sizeof(allocator_dbg_helper*) + sizeof(fit_mode) + sizeof(unsigned char) + sizeof(std::mutex) + sizeof(std::pmr::memory_resource*);
++    char* ptr = reinterpret_cast<char*>(_trusted_memory);
++    ptr += allocator_metadata_size + sizeof(std::pmr::memory_resource*);
+     return buddy_iterator(ptr);
+ }
+
+ allocator_buddies_system::buddy_iterator allocator_buddies_system::end() const noexcept
+ {
+-    char* ptr = reinterpret_cast<char*>(_trusted_memory);
+-    unsigned char k_size = *reinterpret_cast<unsigned char*>(ptr + sizeof(allocator_dbg_helper*) + sizeof(fit_mode));
++    char* ptr = reinterpret_cast<char*>(_trusted_memory);
++    unsigned char k_size = *reinterpret_cast<unsigned char*>(ptr + sizeof(allocator_dbg_helper*) + sizeof(fit_mode));
+     return buddy_iterator(ptr + (1ULL << k_size));
+ }

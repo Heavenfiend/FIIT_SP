@@ -2,39 +2,23 @@
 #include <cstddef>
 #include "../include/allocator_buddies_system.h"
 
-namespace {
-    inline std::mutex* get_mutex(void* ptr) { return reinterpret_cast<std::mutex*>(ptr); }
-    inline allocator_dbg_helper** get_logger(void* ptr) { return reinterpret_cast<allocator_dbg_helper**>(reinterpret_cast<char*>(ptr) + sizeof(std::mutex)); }
-    inline allocator_with_fit_mode::fit_mode* get_fit_mode(void* ptr) { return reinterpret_cast<allocator_with_fit_mode::fit_mode*>(reinterpret_cast<char*>(ptr) + sizeof(std::mutex) + sizeof(allocator_dbg_helper*)); }
-    inline unsigned char* get_k_size(void* ptr) { return reinterpret_cast<unsigned char*>(reinterpret_cast<char*>(ptr) + sizeof(std::mutex) + sizeof(allocator_dbg_helper*) + sizeof(allocator_with_fit_mode::fit_mode)); }
-
-    inline std::pmr::memory_resource** get_parent_allocator(void* ptr) {
-        size_t offset = sizeof(std::mutex) + sizeof(allocator_dbg_helper*) + sizeof(allocator_with_fit_mode::fit_mode) + sizeof(unsigned char);
-        offset = (offset + 7) & ~7;
-        return reinterpret_cast<std::pmr::memory_resource**>(reinterpret_cast<char*>(ptr) + offset);
-    }
-
-    inline char* get_mem_start(void* ptr) {
-        size_t offset = sizeof(std::mutex) + sizeof(allocator_dbg_helper*) + sizeof(allocator_with_fit_mode::fit_mode) + sizeof(unsigned char);
-        offset = (offset + 7) & ~7;
-        offset += sizeof(std::pmr::memory_resource*);
-        offset = (offset + 7) & ~7;
-        return reinterpret_cast<char*>(ptr) + offset;
-    }
-}
-
 allocator_buddies_system::~allocator_buddies_system()
 {
     if (!_trusted_memory)
         return;
 
-    auto* mutex = get_mutex(_trusted_memory);
+    char* ptr = reinterpret_cast<char*>(_trusted_memory);
+    ptr += sizeof(allocator_dbg_helper*);
+    ptr += sizeof(fit_mode);
+    unsigned char k_size = *reinterpret_cast<unsigned char*>(ptr);
+    ptr += sizeof(unsigned char);
+    auto* mutex = reinterpret_cast<std::mutex*>(ptr);
     mutex->~mutex();
+    ptr += sizeof(std::mutex);
 
-    auto* parent_allocator = *get_parent_allocator(_trusted_memory);
-    unsigned char k_size = *get_k_size(_trusted_memory);
+    auto* parent_allocator = *reinterpret_cast<std::pmr::memory_resource**>(ptr);
 
-    size_t total_size = (get_mem_start(_trusted_memory) - reinterpret_cast<char*>(_trusted_memory)) + (1ULL << k_size);
+    size_t total_size = 1ULL << k_size;
 
     if (parent_allocator)
         parent_allocator->deallocate(_trusted_memory, total_size);
@@ -68,28 +52,38 @@ allocator_buddies_system::allocator_buddies_system(
         std::pmr::memory_resource *parent_allocator,
         allocator_with_fit_mode::fit_mode allocate_fit_mode)
 {
-    size_t offset = get_mem_start(nullptr) - static_cast<char*>(nullptr);
-    size_t required_size = offset + free_block_metadata_size;
-    if (space_size < required_size) {
-        throw std::logic_error("Space size too small");
+    size_t k_size = __detail::nearest_greater_k_of_2(space_size);
+    size_t required_size = allocator_metadata_size + sizeof(std::pmr::memory_resource*) + free_block_metadata_size;
+
+    if ((1ULL << k_size) < required_size) {
+        k_size = __detail::nearest_greater_k_of_2(required_size);
     }
 
-    size_t k_size = __detail::nearest_greater_k_of_2(space_size);
-
-    size_t total_size = offset + (1ULL << k_size);
+    size_t total_size = 1ULL << k_size;
 
     if (parent_allocator)
         _trusted_memory = parent_allocator->allocate(total_size);
     else
         _trusted_memory = ::operator new(total_size);
 
-    new (get_mutex(_trusted_memory)) std::mutex();
-    *get_logger(_trusted_memory) = nullptr;
-    *get_fit_mode(_trusted_memory) = allocate_fit_mode;
-    *get_k_size(_trusted_memory) = static_cast<unsigned char>(k_size);
-    *get_parent_allocator(_trusted_memory) = parent_allocator;
+    char* ptr = reinterpret_cast<char*>(_trusted_memory);
 
-    auto *first_block = reinterpret_cast<block_metadata*>(get_mem_start(_trusted_memory));
+    *reinterpret_cast<allocator_dbg_helper**>(ptr) = nullptr;
+    ptr += sizeof(allocator_dbg_helper*);
+
+    *reinterpret_cast<fit_mode*>(ptr) = allocate_fit_mode;
+    ptr += sizeof(fit_mode);
+
+    *reinterpret_cast<unsigned char*>(ptr) = static_cast<unsigned char>(k_size);
+    ptr += sizeof(unsigned char);
+
+    new (ptr) std::mutex();
+    ptr += sizeof(std::mutex);
+
+    *reinterpret_cast<std::pmr::memory_resource**>(ptr) = parent_allocator;
+    ptr += sizeof(std::pmr::memory_resource*);
+
+    auto *first_block = reinterpret_cast<block_metadata*>(ptr);
     first_block->occupied = false;
     first_block->size = static_cast<unsigned char>(k_size);
 }
@@ -97,13 +91,14 @@ allocator_buddies_system::allocator_buddies_system(
 [[nodiscard]] void *allocator_buddies_system::do_allocate_sm(
     size_t size)
 {
-    std::lock_guard<std::mutex> lock(*get_mutex(_trusted_memory));
+    std::lock_guard<std::mutex> lock(*reinterpret_cast<std::mutex*>(
+        reinterpret_cast<char*>(_trusted_memory) + sizeof(allocator_dbg_helper*) + sizeof(fit_mode) + sizeof(unsigned char)));
 
     size_t required_size = size + occupied_block_metadata_size;
     unsigned char required_k = static_cast<unsigned char>(__detail::nearest_greater_k_of_2(required_size));
     if (required_k < min_k) required_k = static_cast<unsigned char>(min_k);
 
-    fit_mode mode = *get_fit_mode(_trusted_memory);
+    fit_mode mode = *reinterpret_cast<fit_mode*>(reinterpret_cast<char*>(_trusted_memory) + sizeof(allocator_dbg_helper*));
 
     block_metadata* best_block = nullptr;
 
@@ -140,20 +135,24 @@ allocator_buddies_system::allocator_buddies_system(
     }
 
     best_block->occupied = true;
-    *reinterpret_cast<void**>(reinterpret_cast<char*>(best_block) + sizeof(block_metadata)) = _trusted_memory;
-    return reinterpret_cast<char*>(best_block) + occupied_block_metadata_size;
+    if (best_block->size >= min_k) {
+        *reinterpret_cast<void**>(reinterpret_cast<char*>(best_block) + sizeof(block_metadata)) = _trusted_memory;
+        return reinterpret_cast<char*>(best_block) + occupied_block_metadata_size;
+    }
+    return reinterpret_cast<char*>(best_block) + free_block_metadata_size;
 }
 
 void allocator_buddies_system::do_deallocate_sm(void *at)
 {
-    std::lock_guard<std::mutex> lock(*get_mutex(_trusted_memory));
+    std::lock_guard<std::mutex> lock(*reinterpret_cast<std::mutex*>(
+        reinterpret_cast<char*>(_trusted_memory) + sizeof(allocator_dbg_helper*) + sizeof(fit_mode) + sizeof(unsigned char)));
 
     char* target_ptr = reinterpret_cast<char*>(at) - occupied_block_metadata_size;
     block_metadata* block = reinterpret_cast<block_metadata*>(target_ptr);
 
-    char* mem_start = get_mem_start(_trusted_memory);
-    unsigned char k_size = *get_k_size(_trusted_memory);
-    char* mem_end = mem_start + (1ULL << k_size);
+    char* mem_start = reinterpret_cast<char*>(_trusted_memory) + allocator_metadata_size + sizeof(std::pmr::memory_resource*);
+    unsigned char k_size = *reinterpret_cast<unsigned char*>(reinterpret_cast<char*>(_trusted_memory) + sizeof(allocator_dbg_helper*) + sizeof(fit_mode));
+    char* mem_end = reinterpret_cast<char*>(_trusted_memory) + (1ULL << k_size);
 
     if (target_ptr < mem_start || target_ptr >= mem_end) {
         throw std::logic_error("Attempt to deallocate memory not allocated by this allocator");
@@ -202,14 +201,16 @@ bool allocator_buddies_system::do_is_equal(const std::pmr::memory_resource &othe
 inline void allocator_buddies_system::set_fit_mode(
     allocator_with_fit_mode::fit_mode mode)
 {
-    std::lock_guard<std::mutex> lock(*get_mutex(_trusted_memory));
-    *get_fit_mode(_trusted_memory) = mode;
+    std::lock_guard<std::mutex> lock(*reinterpret_cast<std::mutex*>(
+        reinterpret_cast<char*>(_trusted_memory) + sizeof(allocator_dbg_helper*) + sizeof(fit_mode) + sizeof(unsigned char)));
+    *reinterpret_cast<fit_mode*>(reinterpret_cast<char*>(_trusted_memory) + sizeof(allocator_dbg_helper*)) = mode;
 }
 
 
 std::vector<allocator_test_utils::block_info> allocator_buddies_system::get_blocks_info() const noexcept
 {
-    std::lock_guard<std::mutex> lock(*get_mutex(_trusted_memory));
+    std::lock_guard<std::mutex> lock(*reinterpret_cast<std::mutex*>(
+        reinterpret_cast<char*>(_trusted_memory) + sizeof(allocator_dbg_helper*) + sizeof(fit_mode) + sizeof(unsigned char)));
     return get_blocks_info_inner();
 }
 
@@ -218,10 +219,6 @@ std::vector<allocator_test_utils::block_info> allocator_buddies_system::get_bloc
     std::vector<allocator_test_utils::block_info> info;
     buddy_iterator end_it = end();
     for (buddy_iterator it = begin(); it != end_it; ++it) {
-        if (!it.operator*()) {
-            break;
-        }
-        if (it.operator*() >= end_it.operator*()) break;
         allocator_test_utils::block_info block;
         block.block_size = it.size();
         block.is_block_occupied = it.occupied();
@@ -232,18 +229,16 @@ std::vector<allocator_test_utils::block_info> allocator_buddies_system::get_bloc
 
 allocator_buddies_system::buddy_iterator allocator_buddies_system::begin() const noexcept
 {
-    return buddy_iterator(get_mem_start(_trusted_memory));
+    char* ptr = reinterpret_cast<char*>(_trusted_memory);
+    ptr += allocator_metadata_size + sizeof(std::pmr::memory_resource*);
+    return buddy_iterator(ptr);
 }
 
 allocator_buddies_system::buddy_iterator allocator_buddies_system::end() const noexcept
 {
-    unsigned char k_size = *get_k_size(_trusted_memory);
-    return buddy_iterator(get_mem_start(_trusted_memory) + (1ULL << k_size));
-}
-
-bool allocator_buddies_system::buddy_iterator::operator!=(const allocator_buddies_system::buddy_iterator &other) const noexcept
-{
-    return _block != other._block && _block < other._block;
+    char* ptr = reinterpret_cast<char*>(_trusted_memory);
+    unsigned char k_size = *reinterpret_cast<unsigned char*>(ptr + sizeof(allocator_dbg_helper*) + sizeof(fit_mode));
+    return buddy_iterator(ptr + (1ULL << k_size));
 }
 
 size_t allocator_buddies_system::buddy_iterator::size() const noexcept
@@ -257,6 +252,10 @@ bool allocator_buddies_system::buddy_iterator::operator==(const allocator_buddie
     return _block == other._block;
 }
 
+bool allocator_buddies_system::buddy_iterator::operator!=(const allocator_buddies_system::buddy_iterator &other) const noexcept
+{
+    return _block != other._block;
+}
 
 allocator_buddies_system::buddy_iterator &allocator_buddies_system::buddy_iterator::operator++() & noexcept
 {
