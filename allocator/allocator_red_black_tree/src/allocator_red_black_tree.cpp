@@ -10,19 +10,10 @@ namespace
 
     std::pmr::memory_resource*& get_parent_allocator(void* trusted_memory)
     {
-        // Actually, the first pointer in our allocator_metadata is allocator_dbg_helper*.
-        // The instructions state that if parent is nullptr, we use global heap.
-        // We can just query `std::pmr::get_default_resource()` if `_trusted_memory` was allocated with global heap?
-        // Let's store parent allocator inside `_trusted_memory` after metadata, or we just rely on parent_allocator being preserved in some other way.
-        // Oh wait! We are storing it in the FIRST 8 bytes, which overrides `allocator_dbg_helper*`!
-        // But the dbg_helper pointer IS the `parent_allocator` if we don't store both? No!
-        // `allocator_red_black_tree` is BOTH `smart_mem_resource` and `allocator_dbg_helper`.
-        // Let's use an explicit global variable or something? No.
-        // Let's fix the offset!
+        // родительский аллокатор хранится после стандартных метаданных
         return *reinterpret_cast<std::pmr::memory_resource**>(
                 reinterpret_cast<char*>(trusted_memory) + sizeof(allocator_dbg_helper*) + sizeof(fit_mode) + sizeof(size_t) + sizeof(std::mutex) + sizeof(void*)
         );
-        // Wait, if it exceeds metadata size, we just allocate `allocator_metadata_size + sizeof(std::pmr::memory_resource*)`!
     }
 
     allocator_dbg_helper*& get_dbg_helper(void* trusted_memory)
@@ -108,6 +99,7 @@ namespace
     constexpr unsigned char RED = 0;
     constexpr unsigned char BLACK = 1;
 
+    // левый поворот для балансировки дерева
     void rb_left_rotate(void** root, void* x)
     {
         void* y = *get_right(x);
@@ -125,6 +117,7 @@ namespace
         *get_parent(x) = y;
     }
 
+    // правый поворот для балансировки дерева
     void rb_right_rotate(void** root, void* y)
     {
         void* x = *get_left(y);
@@ -142,6 +135,7 @@ namespace
         *get_parent(y) = x;
     }
 
+    // восстановление свойств красно-черного дерева после вставки
     void rb_insert_fixup(void** root, void* z)
     {
         while (*get_parent(z) != nullptr && get_block_data_fix(*get_parent(z))->color == RED)
@@ -194,6 +188,7 @@ namespace
         get_block_data_fix(*root)->color = BLACK;
     }
 
+    // вставка нового блока в красно-черное дерево свободных блоков
     void rb_insert(void** root, void* z)
     {
         *get_left(z) = nullptr;
@@ -218,13 +213,14 @@ namespace
             *get_right(y) = z;
         get_block_data_fix(z)->color = RED;
 
-        // Ensure parent of root is null before fixup
+        // гарантируем, что у корня нет родителя перед балансировкой
         if (*root != nullptr)
             *get_parent(*root) = nullptr;
 
         rb_insert_fixup(root, z);
     }
 
+    // замена одного поддерева на другое
     void rb_transplant(void** root, void* u, void* v)
     {
         if (*get_parent(u) == nullptr)
@@ -237,6 +233,7 @@ namespace
             *get_parent(v) = *get_parent(u);
     }
 
+    // поиск узла с минимальным размером
     void* rb_minimum(void* x)
     {
         while (*get_left(x) != nullptr)
@@ -244,6 +241,7 @@ namespace
         return x;
     }
 
+    // восстановление свойств красно-черного дерева после удаления
     void rb_delete_fixup(void** root, void* x, void* x_parent)
     {
         while (x != *root && (x == nullptr || get_block_data_fix(x)->color == BLACK))
@@ -327,6 +325,7 @@ namespace
             get_block_data_fix(x)->color = BLACK;
     }
 
+    // удаление свободного блока из красно-черного дерева
     void rb_delete(void** root, void* z)
     {
         void* y = z;
@@ -374,7 +373,7 @@ namespace
         if (y_original_color == BLACK)
             rb_delete_fixup(root, x, x_parent);
 
-        // z must be fully detached to avoid leaks/cycles
+        // отсоединяем блок для безопасности
         *get_left(z) = nullptr;
         *get_right(z) = nullptr;
         *get_parent(z) = nullptr;
@@ -454,9 +453,10 @@ allocator_red_black_tree::allocator_red_black_tree(
         std::pmr::memory_resource *parent_allocator,
         allocator_with_fit_mode::fit_mode allocate_fit_mode)
 {
-    // Allocate extra space for parent allocator if we exceed standard metadata
+    // резервируем место под дополнительный указатель (родительский аллокатор)
     size_t actual_metadata_size = allocator_metadata_size + sizeof(std::pmr::memory_resource*);
-    // Align actual metadata size up to the maximal alignment boundary.
+
+    // выравниваем размер метаданных для корректного доступа к памяти
     size_t alignment = alignof(std::max_align_t);
     actual_metadata_size = (actual_metadata_size + alignment - 1) & ~(alignment - 1);
 
@@ -566,7 +566,7 @@ bool allocator_red_black_tree::do_is_equal(const std::pmr::memory_resource &othe
 
     if (block_size - target_size >= free_block_metadata_size)
     {
-        // Split
+        // разделяем блок на занятый и свободный остаток
         void* split_node = reinterpret_cast<char*>(best_node) + target_size;
         get_block_size(split_node) = block_size - target_size;
         get_block_data_fix(split_node)->occupied = false;
@@ -616,7 +616,7 @@ void allocator_red_black_tree::do_deallocate_sm(void *at)
     void* prev_phys = *get_prev_phys(block);
     void* next_phys = get_next_phys(block, _trusted_memory);
 
-    // Merge with next if free
+    // сливаем со следующим физическим блоком, если он свободен
     if (next_phys != nullptr && !get_block_data_fix(next_phys)->occupied)
     {
         rb_delete(get_root_rb_tree(_trusted_memory), next_phys);
@@ -628,7 +628,7 @@ void allocator_red_black_tree::do_deallocate_sm(void *at)
         }
     }
 
-    // Merge with prev if free
+    // сливаем с предыдущим физическим блоком, если он свободен
     if (prev_phys != nullptr && !get_block_data_fix(prev_phys)->occupied)
     {
         rb_delete(get_root_rb_tree(_trusted_memory), prev_phys);
