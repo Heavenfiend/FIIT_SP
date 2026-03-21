@@ -593,14 +593,18 @@ bool allocator_red_black_tree::do_is_equal(const std::pmr::memory_resource &othe
         get_block_data_fix(best_node)->occupied = true;
     }
 
-    return reinterpret_cast<char*>(best_node) + occupied_block_metadata_size;
+    size_t alignment = alignof(std::max_align_t);
+    size_t offset = (sizeof(size_t) + sizeof(void*) + alignment - 1) & ~(alignment - 1);
+    return reinterpret_cast<char*>(best_node) + offset;
 }
 
 void allocator_red_black_tree::do_deallocate_sm(void *at)
 {
     std::lock_guard<std::mutex> lock(*get_mutex(_trusted_memory));
 
-    void* block = reinterpret_cast<char*>(at) - occupied_block_metadata_size;
+    size_t alignment = alignof(std::max_align_t);
+    size_t offset = (sizeof(size_t) + sizeof(void*) + alignment - 1) & ~(alignment - 1);
+    void* block = reinterpret_cast<char*>(at) - offset;
 
     size_t allocator_size = get_allocator_size(_trusted_memory);
     if (block < reinterpret_cast<char*>(_trusted_memory) || reinterpret_cast<char*>(block) >= reinterpret_cast<char*>(_trusted_memory) + allocator_size)
