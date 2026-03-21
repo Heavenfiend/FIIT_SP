@@ -105,7 +105,7 @@ allocator_sorted_list::allocator_sorted_list(
         std::pmr::memory_resource *parent_allocator,
         allocator_with_fit_mode::fit_mode allocate_fit_mode)
 {
-    // если родитель не указан, берем стандартный системный аллокатор
+    // если родитель не указан, берем память черзез new
     if (!parent_allocator) {
         parent_allocator = std::pmr::get_default_resource();
     }
