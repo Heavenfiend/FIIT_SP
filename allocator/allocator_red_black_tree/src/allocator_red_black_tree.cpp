@@ -515,7 +515,9 @@ bool allocator_red_black_tree::do_is_equal(const std::pmr::memory_resource &othe
 
     if (mode == fit_mode::first_fit)
     {
-        void* first_block = reinterpret_cast<char*>(_trusted_memory) + allocator_metadata_size + sizeof(std::pmr::memory_resource*);
+        size_t alignment = alignof(std::max_align_t);
+        size_t actual_metadata_size = (allocator_metadata_size + sizeof(std::pmr::memory_resource*) + alignment - 1) & ~(alignment - 1);
+        void* first_block = reinterpret_cast<char*>(_trusted_memory) + actual_metadata_size;
         void* it = first_block;
         while (it != nullptr)
         {
@@ -714,10 +716,12 @@ void *allocator_red_black_tree::rb_iterator::operator*() const noexcept
 
 allocator_red_black_tree::rb_iterator::rb_iterator() : _block_ptr(nullptr), _trusted(nullptr) {}
 
-allocator_red_black_tree::rb_iterator::rb_iterator(void *trusted) : _trusted(trusted)
-{
-    if (_trusted != nullptr)
-        _block_ptr = reinterpret_cast<char*>(_trusted) + allocator_metadata_size + sizeof(std::pmr::memory_resource*);
+allocator_red_black_tree::rb_iterator::rb_iterator(void *trusted) : _trusted(trusted) {
+    if (_trusted != nullptr) {
+        size_t alignment = alignof(std::max_align_t);
+        size_t actual_metadata_size = (allocator_metadata_size + sizeof(std::pmr::memory_resource*) + alignment - 1) & ~(alignment - 1);
+        _block_ptr = reinterpret_cast<char*>(_trusted) + actual_metadata_size;
+    }
     else
         _block_ptr = nullptr;
 }
