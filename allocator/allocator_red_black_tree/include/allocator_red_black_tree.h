@@ -27,8 +27,8 @@ private:
 
     static constexpr const size_t allocator_metadata_size = sizeof(allocator_dbg_helper*) + sizeof(fit_mode) + sizeof(size_t) + sizeof(std::mutex) + sizeof(void*);
 
-    static constexpr const size_t occupied_block_metadata_size = sizeof(size_t) + 2 * sizeof(void*) + sizeof(block_data);
-    static constexpr const size_t free_block_metadata_size = sizeof(size_t) + 5 * sizeof(void*) + sizeof(block_data);
+    static constexpr const size_t occupied_block_metadata_size = sizeof(size_t) + 2 * sizeof(void*) + sizeof(block_data) + sizeof(void*);
+    static constexpr const size_t free_block_metadata_size = sizeof(size_t) + 5 * sizeof(void*) + sizeof(block_data) + sizeof(void*);
 
 public:
     

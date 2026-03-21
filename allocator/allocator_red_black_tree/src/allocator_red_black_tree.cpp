@@ -76,24 +76,29 @@ namespace
         unsigned char color : 4;
     };
 
+    void*& get_trusted_memory_ptr(void* block_ptr)
+    {
+        return *reinterpret_cast<void**>(reinterpret_cast<char*>(block_ptr) + sizeof(size_t) + 2 * sizeof(void*));
+    }
+
     block_data_t* get_block_data_fix(void* block_ptr)
     {
-        return reinterpret_cast<block_data_t*>(reinterpret_cast<char*>(block_ptr) + sizeof(size_t) + 2 * sizeof(void*));
+        return reinterpret_cast<block_data_t*>(reinterpret_cast<char*>(block_ptr) + sizeof(size_t) + 3 * sizeof(void*));
     }
 
     void** get_parent(void* block_ptr)
     {
-        return reinterpret_cast<void**>(reinterpret_cast<char*>(block_ptr) + sizeof(size_t) + 2 * sizeof(void*) + sizeof(block_data_t));
+        return reinterpret_cast<void**>(reinterpret_cast<char*>(block_ptr) + sizeof(size_t) + 3 * sizeof(void*) + sizeof(block_data_t));
     }
 
     void** get_left(void* block_ptr)
     {
-        return reinterpret_cast<void**>(reinterpret_cast<char*>(block_ptr) + sizeof(size_t) + 3 * sizeof(void*) + sizeof(block_data_t));
+        return reinterpret_cast<void**>(reinterpret_cast<char*>(block_ptr) + sizeof(size_t) + 4 * sizeof(void*) + sizeof(block_data_t));
     }
 
     void** get_right(void* block_ptr)
     {
-        return reinterpret_cast<void**>(reinterpret_cast<char*>(block_ptr) + sizeof(size_t) + 4 * sizeof(void*) + sizeof(block_data_t));
+        return reinterpret_cast<void**>(reinterpret_cast<char*>(block_ptr) + sizeof(size_t) + 5 * sizeof(void*) + sizeof(block_data_t));
     }
 
     constexpr unsigned char RED = 0;
@@ -478,6 +483,7 @@ allocator_red_black_tree::allocator_red_black_tree(
     void* first_block = reinterpret_cast<char*>(_trusted_memory) + actual_metadata_size;
     get_block_size(first_block) = space_size + free_block_metadata_size;
     *get_prev_phys(first_block) = nullptr;
+    get_trusted_memory_ptr(first_block) = nullptr;
     *get_parent(first_block) = nullptr;
     *get_left(first_block) = nullptr;
     *get_right(first_block) = nullptr;
@@ -573,6 +579,7 @@ bool allocator_red_black_tree::do_is_equal(const std::pmr::memory_resource &othe
         get_block_size(split_node) = block_size - target_size;
         get_block_data_fix(split_node)->occupied = false;
         *get_prev_phys(split_node) = best_node;
+        get_trusted_memory_ptr(split_node) = nullptr;
         *get_parent(split_node) = nullptr;
         *get_left(split_node) = nullptr;
         *get_right(split_node) = nullptr;
@@ -585,12 +592,14 @@ bool allocator_red_black_tree::do_is_equal(const std::pmr::memory_resource &othe
 
         get_block_size(best_node) = target_size;
         get_block_data_fix(best_node)->occupied = true;
+        get_trusted_memory_ptr(best_node) = _trusted_memory;
 
         rb_insert(get_root_rb_tree(_trusted_memory), split_node);
     }
     else
     {
         get_block_data_fix(best_node)->occupied = true;
+        get_trusted_memory_ptr(best_node) = _trusted_memory;
     }
 
     size_t alignment = alignof(std::max_align_t);
@@ -617,6 +626,12 @@ void allocator_red_black_tree::do_deallocate_sm(void *at)
         throw std::logic_error("Deallocating already free block.");
     }
 
+    if (get_trusted_memory_ptr(block) != _trusted_memory)
+    {
+        throw std::logic_error("Attempted to deallocate memory not owned by this allocator");
+    }
+
+    get_trusted_memory_ptr(block) = nullptr;
     get_block_data_fix(block)->occupied = false;
 
     void* prev_phys = *get_prev_phys(block);

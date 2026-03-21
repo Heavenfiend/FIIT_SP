@@ -19,7 +19,7 @@ private:
 
     static constexpr const size_t allocator_metadata_size = sizeof(std::pmr::memory_resource *) + sizeof(fit_mode) + sizeof(size_t) + sizeof(std::mutex) + sizeof(void*);
 
-    static constexpr const size_t block_metadata_size = sizeof(void*) + sizeof(size_t);
+    static constexpr const size_t block_metadata_size = sizeof(void*) + sizeof(size_t) + sizeof(void*);
 
 public:
 
