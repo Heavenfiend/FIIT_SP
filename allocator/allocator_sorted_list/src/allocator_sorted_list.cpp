@@ -51,14 +51,18 @@ namespace {
         return *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(block) + sizeof(size_t));
     }
 
+    void*& get_trusted_memory_ptr(void* block) {
+        return *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(block) + sizeof(size_t) + sizeof(void*));
+    }
+
     // адрес данных
     void* get_block_payload(void* block) {
-        return reinterpret_cast<uint8_t*>(block) + sizeof(size_t) + sizeof(void*);
+        return reinterpret_cast<uint8_t*>(block) + sizeof(size_t) + 2 * sizeof(void*);
     }
 
     // найти заголовок
     void* get_block_from_payload(void* payload) {
-        return reinterpret_cast<uint8_t*>(payload) - sizeof(size_t) - sizeof(void*);
+        return reinterpret_cast<uint8_t*>(payload) - sizeof(size_t) - 2 * sizeof(void*);
     }
 
     // проверка занятости
@@ -130,6 +134,7 @@ allocator_sorted_list::allocator_sorted_list(
     get_block_size(first_block) = space_size - allocator_metadata_size - block_metadata_size;
 
     get_next_free(first_block) = nullptr;
+    get_trusted_memory_ptr(first_block) = nullptr;
 }
 
 // ищем подходящий свободный блок, отрезаем от него нужный кусок и перестраиваем список
@@ -192,6 +197,7 @@ allocator_sorted_list::allocator_sorted_list(
         // записываем в остаток его новый уменьшившийся размер
         get_block_size(new_free_block) = best_size - block_metadata_size - size;
         get_next_free(new_free_block) = get_next_free(best_block);
+        get_trusted_memory_ptr(new_free_block) = nullptr;
         // текущий блок теперь ровно того размера, который просили
         get_block_size(best_block) = size;
         set_block_occupied(best_block);
@@ -212,6 +218,7 @@ allocator_sorted_list::allocator_sorted_list(
     }
     // помечаем, что наш выбранный блок теперь занят
     set_block_occupied(best_block);
+    get_trusted_memory_ptr(best_block) = _trusted_memory;
 
     return get_block_payload(best_block);
 }
@@ -324,6 +331,13 @@ void allocator_sorted_list::do_deallocate_sm(
         at >= reinterpret_cast<uint8_t*>(_trusted_memory) + size) {
         throw std::logic_error("Pointer does not belong to this allocator");
     }
+
+    // проверяем, что блок принадлежит нам
+    if (get_trusted_memory_ptr(block) != _trusted_memory) {
+        throw std::logic_error("Attempted to deallocate memory not owned by this allocator");
+    }
+    get_trusted_memory_ptr(block) = nullptr;
+
     // ищем место в списке свободных блоков, куда вставить наш освобождаемый блок
     void* prev_free = nullptr;
     void* current_free = get_first_free(_trusted_memory);
