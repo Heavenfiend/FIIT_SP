@@ -87,13 +87,13 @@ allocator_sorted_list::~allocator_sorted_list()
     // отдаем память родителю
     parent->deallocate(_trusted_memory, size);
 }
- // забираем ресурсы у одного и передаем другому
+ // перемещение
 allocator_sorted_list::allocator_sorted_list(
     allocator_sorted_list &&other) noexcept : _trusted_memory(other._trusted_memory)
 {
     other._trusted_memory = nullptr;
 }
-// проверяем на самоприсваивание, чистим свою память и забираем чужую
+// перемещающее присваивание
 allocator_sorted_list &allocator_sorted_list::operator=(
     allocator_sorted_list &&other) noexcept
 {
@@ -103,7 +103,7 @@ allocator_sorted_list &allocator_sorted_list::operator=(
     other._trusted_memory = nullptr;
     return *this;
 }
-// запрашиваем память у системы и размечаем её: создаем шапку и первый огромный свободный блок
+// создаем аллокатор: создаем шапку и первый огромный свободный блок
 allocator_sorted_list::allocator_sorted_list(
         size_t space_size,
         std::pmr::memory_resource *parent_allocator,

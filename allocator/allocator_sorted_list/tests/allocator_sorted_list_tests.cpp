@@ -84,7 +84,7 @@ TEST(allocatorSortedListPositiveTests, test3)
 
 TEST(allocatorSortedListPositiveTests, test4)
 {
-    std::unique_ptr<smart_mem_resource> alloc(new allocator_sorted_list(1000, nullptr, allocator_with_fit_mode::fit_mode::first_fit));
+    std::unique_ptr<smart_mem_resource> alloc(new allocator_sorted_list(1200, nullptr, allocator_with_fit_mode::fit_mode::first_fit));
     
     auto first_block = reinterpret_cast<unsigned char *>(alloc->allocate(sizeof(unsigned char) * 250));
     auto second_block = reinterpret_cast<unsigned char *>(alloc->allocate(sizeof(char) * 150));
