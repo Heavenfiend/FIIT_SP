@@ -64,25 +64,31 @@ allocator_boundary_tags::~allocator_boundary_tags()
 
     parent_allocator->deallocate(_trusted_memory, total_size);
 }
-// просто забираем указатель на память у соседа
+// конструктор перемещения
 allocator_boundary_tags::allocator_boundary_tags(
-    allocator_boundary_tags &&other) noexcept
+    allocator_boundary_tags &&other) noexcept : _trusted_memory(nullptr)
 {
-    _trusted_memory = other._trusted_memory;
-    other._trusted_memory = nullptr;
+    if (other._trusted_memory) {
+        std::lock_guard<std::mutex> lock(get_mutex(other._trusted_memory));
+        _trusted_memory = other._trusted_memory;
+        other._trusted_memory = nullptr;
+    }
 }
-// очищаем себя и забираем чужую память
+// перемещающее присваивание
 allocator_boundary_tags &allocator_boundary_tags::operator=(
     allocator_boundary_tags &&other) noexcept
 {
     if (this == &other) return *this;
 
-    if (_trusted_memory) {
-        this->~allocator_boundary_tags();
-    }
+    this->~allocator_boundary_tags();
 
-    _trusted_memory = other._trusted_memory;
-    other._trusted_memory = nullptr;
+    if (other._trusted_memory) {
+        std::lock_guard<std::mutex> lock(get_mutex(other._trusted_memory));
+        _trusted_memory = other._trusted_memory;
+        other._trusted_memory = nullptr;
+    } else {
+        _trusted_memory = nullptr;
+    }
 
     return *this;
 }
@@ -267,16 +273,6 @@ std::vector<allocator_test_utils::block_info> allocator_boundary_tags::get_block
         current = get_next_block_ptr(current);
     }
     return result;
-}
-// запрещаем конструктор копирования, выкидываем ошибку если кто то захочет скопировать
-allocator_boundary_tags::allocator_boundary_tags(const allocator_boundary_tags &other)
-{
-    throw std::logic_error("Copying allocator is not supported");
-}
-// запрещаем оператор присваивания
-allocator_boundary_tags &allocator_boundary_tags::operator=(const allocator_boundary_tags &other)
-{
-    throw std::logic_error("Copying allocator is not supported");
 }
 
 bool allocator_boundary_tags::do_is_equal(const std::pmr::memory_resource &other) const noexcept

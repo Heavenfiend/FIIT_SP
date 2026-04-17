@@ -75,23 +75,25 @@ namespace {
         get_next_free(block) = block;
     }
 }
-
+// деструктор
 allocator_sorted_list::~allocator_sorted_list()
 {
     if (!_trusted_memory) return;
 
     std::pmr::memory_resource* parent = get_parent(_trusted_memory);
     size_t size = get_size(_trusted_memory);
-    // вручную вызываем деструктор мьютекса
     get_mutex(_trusted_memory).~mutex();
-    // отдаем память родителю
-    parent->deallocate(_trusted_memory, size);
+    parent->deallocate(_trusted_memory, size); // отдаем память родителю
 }
  // перемещение
 allocator_sorted_list::allocator_sorted_list(
-    allocator_sorted_list &&other) noexcept : _trusted_memory(other._trusted_memory)
+    allocator_sorted_list &&other) noexcept : _trusted_memory(nullptr)
 {
-    other._trusted_memory = nullptr;
+    if (other._trusted_memory) {
+        std::lock_guard<std::mutex> lock(get_mutex(other._trusted_memory));
+        _trusted_memory = other._trusted_memory;
+        other._trusted_memory = nullptr;
+    }
 }
 // перемещающее присваивание
 allocator_sorted_list &allocator_sorted_list::operator=(
@@ -99,8 +101,15 @@ allocator_sorted_list &allocator_sorted_list::operator=(
 {
     if (this == &other) return *this;
     this->~allocator_sorted_list();
-    _trusted_memory = other._trusted_memory;
-    other._trusted_memory = nullptr;
+
+    if (other._trusted_memory) {
+        std::lock_guard<std::mutex> lock(get_mutex(other._trusted_memory));
+        _trusted_memory = other._trusted_memory;
+        other._trusted_memory = nullptr;
+    } else {
+        _trusted_memory = nullptr;
+    }
+
     return *this;
 }
 // создаем аллокатор: создаем шапку и первый огромный свободный блок
@@ -121,7 +130,6 @@ allocator_sorted_list::allocator_sorted_list(
     _trusted_memory = parent_allocator->allocate(space_size);
 
     std::memset(_trusted_memory, 0, space_size);
-    // записываем в начало памяти наши метаданные аллокатора
     get_parent(_trusted_memory) = parent_allocator;
     get_mode(_trusted_memory) = allocate_fit_mode;
     get_size(_trusted_memory) = space_size;
@@ -141,11 +149,10 @@ allocator_sorted_list::allocator_sorted_list(
 [[nodiscard]] void *allocator_sorted_list::do_allocate_sm(
     size_t size)
 {
-    // если памяти вообще нет — кидаем ошибку
     if (!_trusted_memory) {
         throw std::bad_alloc();
     }
-    // вешаем мьютесыв
+
     std::lock_guard<std::mutex> lock(get_mutex(_trusted_memory));
 
     void* prev_block = nullptr;
@@ -184,7 +191,6 @@ allocator_sorted_list::allocator_sorted_list(
         prev_block = current_block;
         current_block = get_next_free(current_block);
     }
-    // если ничего не нашли — памяти не хватило
     if (!best_block) {
         throw std::bad_alloc();
     }
@@ -209,7 +215,6 @@ allocator_sorted_list::allocator_sorted_list(
         }
     } else {
         // если блок почти совпадает по размеру дробить нет смысла,
-        // просто выкидываем его из списка свободных
         if (best_prev) {
             get_next_free(best_prev) = get_next_free(best_block);
         } else {
@@ -222,90 +227,7 @@ allocator_sorted_list::allocator_sorted_list(
 
     return get_block_payload(best_block);
 }
-// создаем полную копию аллокатора: копируем память и пересчитываем все указатели внутри
-allocator_sorted_list::allocator_sorted_list(const allocator_sorted_list &other)
-{
-    // если копировать нечего — зануляемся и выходим
-    if (!other._trusted_memory) {
-        _trusted_memory = nullptr;
-        return;
-    }
 
-    std::pmr::memory_resource* parent = get_parent(other._trusted_memory);
-    size_t size = get_size(other._trusted_memory);
-
-    // выделяем себе такой же кусок памяти сколько и у родителя
-    _trusted_memory = parent->allocate(size);
-    std::memcpy(_trusted_memory, other._trusted_memory, size);
-    // создаем новый мьютекс
-    new (&get_mutex(_trusted_memory)) std::mutex();
-
-    void* other_first = get_first_free(other._trusted_memory);
-    if (other_first) {
-        // вычисляем где новый первый свободный блок памяти у нас
-        get_first_free(_trusted_memory) = reinterpret_cast<uint8_t*>(_trusted_memory) +
-            (reinterpret_cast<uint8_t*>(other_first) - reinterpret_cast<uint8_t*>(other._trusted_memory));
-
-        void* current_other = other_first;
-        void* current_this = get_first_free(_trusted_memory);
-
-        while (get_next_free(current_other)) {
-            void* next_other = get_next_free(current_other);
-            // считаем адрес следующего блока относительно нашей новой памяти
-            void* next_this = reinterpret_cast<uint8_t*>(_trusted_memory) +
-                (reinterpret_cast<uint8_t*>(next_other) - reinterpret_cast<uint8_t*>(other._trusted_memory));
-
-            get_next_free(current_this) = next_this;
-
-            current_other = next_other;
-            current_this = next_this;
-        }
-    }
-}
-
-// сначала полностью очищаем себя, а потом создаем внутри точную копию другого аллокатора
-allocator_sorted_list &allocator_sorted_list::operator=(const allocator_sorted_list &other)
-{
-    if (this == &other) return *this;
-
-    this->~allocator_sorted_list();
-
-    if (!other._trusted_memory) {
-        _trusted_memory = nullptr;
-        return *this;
-    }
-    // берем данные о размере и родителе у оригинала
-    std::pmr::memory_resource* parent = get_parent(other._trusted_memory);
-    size_t size = get_size(other._trusted_memory);
-    // выделяем новый чистый кусок памяти такого же размера
-    _trusted_memory = parent->allocate(size);
-    std::memcpy(_trusted_memory, other._trusted_memory, size);
-    // создаем новый мьютекс на новом месте
-    new (&get_mutex(_trusted_memory)) std::mutex();
-
-    void* other_first = get_first_free(other._trusted_memory);
-    if (other_first) {
-        // вычисляем адрес первого свободного блока в нашей новой памяти
-        get_first_free(_trusted_memory) = reinterpret_cast<uint8_t*>(_trusted_memory) +
-            (reinterpret_cast<uint8_t*>(other_first) - reinterpret_cast<uint8_t*>(other._trusted_memory));
-
-        void* current_other = other_first;
-        void* current_this = get_first_free(_trusted_memory);
-
-        while (get_next_free(current_other)) {
-            void* next_other = get_next_free(current_other);
-            void* next_this = reinterpret_cast<uint8_t*>(_trusted_memory) +
-                (reinterpret_cast<uint8_t*>(next_other) - reinterpret_cast<uint8_t*>(other._trusted_memory));
-
-            get_next_free(current_this) = next_this;
-
-            current_other = next_other;
-            current_this = next_this;
-        }
-    }
-    // возвращаем ссылку на обновленного себя
-    return *this;
-}
 // проверяем, являются ли два аллокатора по сути одним и тем же объектом
 bool allocator_sorted_list::do_is_equal(const std::pmr::memory_resource &other) const noexcept
 {
@@ -505,11 +427,11 @@ void *allocator_sorted_list::sorted_iterator::operator*() const noexcept
 {
     return _current_ptr;
 }
-// ставим бегунок на самый первый блок (сразу за большой шапкой аллокатора)
+
 allocator_sorted_list::sorted_iterator::sorted_iterator() : _current_ptr(nullptr), _trusted_memory(nullptr)
 {
 }
-
+// установка итератора на заголовок первого блока памяти
 allocator_sorted_list::sorted_iterator::sorted_iterator(void *trusted) : _trusted_memory(trusted)
 {
     if (trusted) {
