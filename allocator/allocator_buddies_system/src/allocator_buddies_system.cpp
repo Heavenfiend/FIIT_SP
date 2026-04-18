@@ -3,42 +3,38 @@
 #include "../include/allocator_buddies_system.h"
 
 namespace {
-    // вычисляем отступ для родительского аллокатора.
-    // нам нужно пропустить: мьютекс + указатель на логгер + режим поиска + 1 байт (k_size)
+    // указатель на родителя + сдвиг
     inline size_t get_parent_allocator_offset() {
-        size_t offset = sizeof(std::mutex) + sizeof(allocator_dbg_helper*) + sizeof(allocator_with_fit_mode::fit_mode) + sizeof(unsigned char);
+        size_t offset = sizeof(std::mutex) + sizeof(allocator_with_fit_mode::fit_mode) + sizeof(unsigned char);
+        return (offset + 7) & ~7;
+    }
 
-        // выравнивание: (offset + 7) & ~7
-        // округляем вверх до ближайшего числа, кратного 8
-        // это нужно, чтобы следующий за этим отступом указатель лег ровно в памяти
-        return (offset + 7) & ~7;
+    // лежит мьютекс
+    inline std::mutex* get_mutex(void* ptr) {
+        return reinterpret_cast<std::mutex*>(ptr);
     }
-    // вычисляем, где заканчивается вся "шапка" и начинаются полезные блоки.
-    inline size_t get_mem_start_offset() {
-        size_t offset = get_parent_allocator_offset() + sizeof(std::pmr::memory_resource*);
-        return (offset + 7) & ~7;
+
+    // лежит режим поиска
+    inline allocator_with_fit_mode::fit_mode* get_fit_mode(void* ptr) {
+        return reinterpret_cast<allocator_with_fit_mode::fit_mode*>(reinterpret_cast<char*>(ptr) + sizeof(std::mutex));
     }
-    // мьютекс лежит в самом начале
-    inline std::mutex* get_mutex(void* ptr) { return reinterpret_cast<std::mutex*>(ptr); }
-    // логгер идет сразу после мьютекса
-    inline allocator_dbg_helper** get_logger(void* ptr) { return reinterpret_cast<allocator_dbg_helper**>(reinterpret_cast<char*>(ptr) + sizeof(std::mutex)); }
-    // режим поиска
-    inline allocator_with_fit_mode::fit_mode* get_fit_mode(void* ptr) { return reinterpret_cast<allocator_with_fit_mode::fit_mode*>(reinterpret_cast<char*>(ptr) + sizeof(std::mutex) + sizeof(allocator_dbg_helper*)); }
-    // k_size: степень двойки
-    inline unsigned char* get_k_size(void* ptr) { return reinterpret_cast<unsigned char*>(reinterpret_cast<char*>(ptr) + sizeof(std::mutex) + sizeof(allocator_dbg_helper*) + sizeof(allocator_with_fit_mode::fit_mode)); }
-    // родительский аллокатор
+    // лежит степень двойки для всей кучи
+    inline unsigned char* get_k_size(void* ptr) {
+        return reinterpret_cast<unsigned char*>(reinterpret_cast<char*>(ptr) + sizeof(std::mutex) + sizeof(allocator_with_fit_mode::fit_mode));
+    }
+    // лежит указатель на родителя
     inline std::pmr::memory_resource** get_parent_allocator(void* ptr) {
         return reinterpret_cast<std::pmr::memory_resource**>(reinterpret_cast<char*>(ptr) + get_parent_allocator_offset());
     }
-    // адрес самого первого блока памяти
+    // место свободной памяти
     inline char* get_mem_start(void* ptr) {
-        return reinterpret_cast<char*>(ptr) + get_mem_start_offset();
+        return reinterpret_cast<char*>(ptr) + get_parent_allocator_offset() + sizeof(std::pmr::memory_resource*);
     }
+
 }
-// деструктор: аккуратно сворачиваемся и возвращаем память
+// деструктор аллокатора
 allocator_buddies_system::~allocator_buddies_system()
 {
-    // если памяти нет — ничего не делаем
     if (!_trusted_memory)
         return;
 
@@ -57,12 +53,15 @@ allocator_buddies_system::~allocator_buddies_system()
 }
 // конструктор перемещения
 allocator_buddies_system::allocator_buddies_system(
-    allocator_buddies_system &&other) noexcept
-    : _trusted_memory(other._trusted_memory)
+    allocator_buddies_system &&other) noexcept : _trusted_memory(nullptr)
 {
-    other._trusted_memory = nullptr;
+    if (other._trusted_memory) {
+        std::lock_guard<std::mutex> lock(*get_mutex(other._trusted_memory));
+        _trusted_memory = other._trusted_memory;
+        other._trusted_memory = nullptr;
+    }
 }
-// оператор перемещения забираем ресурсы у другого аллокатора
+// оператор перемещения
 allocator_buddies_system &allocator_buddies_system::operator=(
     allocator_buddies_system &&other) noexcept
 {
@@ -72,50 +71,53 @@ allocator_buddies_system &allocator_buddies_system::operator=(
     if (_trusted_memory)
         this->~allocator_buddies_system();
 
-    _trusted_memory = other._trusted_memory;
-    other._trusted_memory = nullptr;
+    if (other._trusted_memory) {
+        std::lock_guard<std::mutex> lock(*get_mutex(other._trusted_memory));
+        _trusted_memory = other._trusted_memory;
+        other._trusted_memory = nullptr;
+    } else {
+        _trusted_memory = nullptr;
+    }
+
     return *this;
 }
-// берем сырую память и превращаем её в один огромный блок, размер которого равен степени двойки
+
+// создание аллокатора
 allocator_buddies_system::allocator_buddies_system(
         size_t space_size,
         std::pmr::memory_resource *parent_allocator,
         allocator_with_fit_mode::fit_mode allocate_fit_mode)
 {
-    // 1. считаем отступы
-    size_t offset = get_mem_start_offset();
+    size_t offset = get_parent_allocator_offset() + sizeof(std::pmr::memory_resource*);
     size_t required_size = offset + free_block_metadata_size;
     if (space_size < required_size) {
         throw std::logic_error("Space size too small");
     }
 
-    // 2. находим такое k, чтобы 2^k покрыло нужный размер
+    // ближайшая степерь k^2 >= space size
     size_t k_size = __detail::nearest_greater_k_of_2(space_size);
-    // 3. итоговый размер для выделения: наша шапка +  2^k байт
     size_t total_size = offset + (1ULL << k_size);
-    // 4. запрашиваем память у родителя или напрямую у операционной системы
     if (parent_allocator)
         _trusted_memory = parent_allocator->allocate(total_size);
     else
         _trusted_memory = ::operator new(total_size);
-    // 5. инициализируем шапку
+
+
     new (get_mutex(_trusted_memory)) std::mutex();
-    *get_logger(_trusted_memory) = nullptr;
     *get_fit_mode(_trusted_memory) = allocate_fit_mode;
     *get_k_size(_trusted_memory) = static_cast<unsigned char>(k_size);
     *get_parent_allocator(_trusted_memory) = parent_allocator;
-    // 6. создаем самый первый блок
+
+    // метаданные блока
     auto *first_block = reinterpret_cast<block_metadata*>(get_mem_start(_trusted_memory));
     first_block->occupied = false;
     first_block->size = static_cast<unsigned char>(k_size);
 }
-
+// аллокация
 [[nodiscard]] void *allocator_buddies_system::do_allocate_sm(
     size_t size)
 {
-    // 1. мьютекс
     std::lock_guard<std::mutex> lock(*get_mutex(_trusted_memory));
-    // 2. вычисляем "идеальное k" для запроса
     size_t required_size = size + occupied_block_metadata_size;
     unsigned char required_k = static_cast<unsigned char>(__detail::nearest_greater_k_of_2(required_size));
     if (required_k < min_k) required_k = static_cast<unsigned char>(min_k);
@@ -123,13 +125,13 @@ allocator_buddies_system::allocator_buddies_system(
     fit_mode mode = *get_fit_mode(_trusted_memory);
 
     block_metadata* best_block = nullptr;
-    // 3. поиск подходящего свободного блока через итератор
+
     for (buddy_iterator it = begin(); it != end(); ++it) {
         if (it.occupied()) continue;
 
         unsigned char current_k = reinterpret_cast<block_metadata*>(*it)->size;
         if (current_k >= required_k) {
-            // выбираем блок по стратегии (первый, лучший или худший)
+
             if (mode == fit_mode::first_fit) {
                 best_block = reinterpret_cast<block_metadata*>(*it);
                 break;
@@ -148,37 +150,31 @@ allocator_buddies_system::allocator_buddies_system(
     if (!best_block) {
         throw std::bad_alloc();
     }
-    // дробление блока
+    // дробление блока и создание близнеца
     while (best_block->size > required_k) {
         // уменьшаем степень
         best_block->size--;
         block_metadata* buddy = reinterpret_cast<block_metadata*>(
             reinterpret_cast<char*>(best_block) + (1ULL << best_block->size));
-        // новый близнец помечается как свободный и получает ту же степень k
+
         buddy->occupied = false;
         buddy->size = best_block->size;
     }
-    // 5. блок готов: помечаем его как занятый
+    // метаданные блока
     best_block->occupied = true;
     *reinterpret_cast<void**>(reinterpret_cast<char*>(best_block) + sizeof(block_metadata)) = _trusted_memory;
-    // возвращаем юзеру адрес памяти
     return reinterpret_cast<char*>(best_block) + occupied_block_metadata_size;
 }
 // освобождение и склейка близнецов
 void allocator_buddies_system::do_deallocate_sm(void *at)
 {
-    // 1. заходим под мьютекс
     std::lock_guard<std::mutex> lock(*get_mutex(_trusted_memory));
-
-    // 2. отступаем назад, чтобы найти шапку блока
     char* target_ptr = reinterpret_cast<char*>(at) - occupied_block_metadata_size;
     block_metadata* block = reinterpret_cast<block_metadata*>(target_ptr);
-
-    // проверяем на соответствие блока
+    // проверка на принадлежность
     char* mem_start = get_mem_start(_trusted_memory);
     unsigned char k_size = *get_k_size(_trusted_memory);
     char* mem_end = mem_start + (1ULL << k_size);
-    // проверка на выход за границы нашего адреса
     if (target_ptr < mem_start || target_ptr >= mem_end) {
         throw std::logic_error("Attempt to deallocate memory not allocated by this allocator");
     }
@@ -188,39 +184,25 @@ void allocator_buddies_system::do_deallocate_sm(void *at)
             throw std::logic_error("Attempt to deallocate memory not allocated by this allocator");
         }
     }
-    // 4. освобождаем блок
+
     block->occupied = false;
-    // пытаемся расти вверх, пока не достигнем исходного размера всей памяти
+    // склейка
     while (block->size < k_size) {
-        // вычисляем адрес брата-близнеца через XOR
         size_t relative_offset = reinterpret_cast<char*>(block) - mem_start;
         size_t buddy_offset = relative_offset ^ (1ULL << block->size);
         block_metadata* buddy = reinterpret_cast<block_metadata*>(mem_start + buddy_offset);
-
-        // условие склейки -  близнец должен быть того же размера и СВОБОДЕН
+        // проверка на свободность
         if (buddy->size == block->size && !buddy->occupied) {
             if (buddy_offset < relative_offset) {
                 block = buddy;
             }
-            // увеличиваем степень
             block->size++;
         } else {
-            // если брат занят или другого размера — склейка окончена
             break;
         }
     }
 }
 
-// запрещаем копирование
-allocator_buddies_system::allocator_buddies_system(const allocator_buddies_system &other)
-{
-    throw std::logic_error("Copying allocator_buddies_system is not supported.");
-}
-// запрещаем оператор копирующего присваивания
-allocator_buddies_system &allocator_buddies_system::operator=(const allocator_buddies_system &other)
-{
-    throw std::logic_error("Copying allocator_buddies_system is not supported.");
-}
 // проверяет, является ли другой аллокатор тем же самым объектом
 bool allocator_buddies_system::do_is_equal(const std::pmr::memory_resource &other) const noexcept
 {

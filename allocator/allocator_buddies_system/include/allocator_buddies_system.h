@@ -46,11 +46,7 @@ private:
 
     void *_trusted_memory;
 
-    /**
-     * TODO: You must improve it for alignment support
-     */
 
-    static constexpr const size_t allocator_metadata_size = sizeof(allocator_dbg_helper*) + sizeof(fit_mode) + sizeof(unsigned char) + sizeof(std::mutex);
 
     static constexpr const size_t occupied_block_metadata_size = sizeof(block_metadata) + sizeof(void*);
 
@@ -65,11 +61,9 @@ public:
             std::pmr::memory_resource *parent_allocator = nullptr,
             allocator_with_fit_mode::fit_mode allocate_fit_mode = allocator_with_fit_mode::fit_mode::first_fit);
 
-    allocator_buddies_system(
-        allocator_buddies_system const &other);
-    
-    allocator_buddies_system &operator=(
-        allocator_buddies_system const &other);
+    allocator_buddies_system(allocator_buddies_system const &other) = delete;
+
+    allocator_buddies_system &operator=(allocator_buddies_system const &other) = delete;
     
     allocator_buddies_system(
         allocator_buddies_system &&other) noexcept;
