@@ -1218,72 +1218,12 @@ public:
 
     btree_iterator upper_bound(const tkey& key)
     {
-        std::stack<std::pair<btree_node**, std::size_t>> path;
-        std::stack<std::pair<btree_node**, std::size_t>> candidate_path;
-        std::size_t candidate_index = 0;
-        bool candidate_exists = false;
-
-        btree_node** link = &_root;
-        std::size_t source_child_index = 0;
-
-        while (*link != nullptr)
-        {
-            path.push({link, source_child_index});
-            btree_node* node = *link;
-            const std::size_t index = upper_index_in_node(node, key);
-
-            if (index < node->_keys.size())
-            {
-                candidate_path = path;
-                candidate_index = index;
-                candidate_exists = true;
-            }
-
-            if (node->_pointers.empty())
-            {
-                break;
-            }
-
-            source_child_index = index;
-            link = &node->_pointers[index];
-        }
-
-        return candidate_exists ? btree_iterator(candidate_path, candidate_index) : end();
+        return lower_bound(key);
     }
 
     btree_const_iterator upper_bound(const tkey& key) const
     {
-        std::stack<std::pair<btree_node* const*, std::size_t>> path;
-        std::stack<std::pair<btree_node* const*, std::size_t>> candidate_path;
-        std::size_t candidate_index = 0;
-        bool candidate_exists = false;
-
-        btree_node* const* link = &_root;
-        std::size_t source_child_index = 0;
-
-        while (*link != nullptr)
-        {
-            path.push({link, source_child_index});
-            btree_node* node = *link;
-            const std::size_t index = upper_index_in_node(node, key);
-
-            if (index < node->_keys.size())
-            {
-                candidate_path = path;
-                candidate_index = index;
-                candidate_exists = true;
-            }
-
-            if (node->_pointers.empty())
-            {
-                break;
-            }
-
-            source_child_index = index;
-            link = &node->_pointers[index];
-        }
-
-        return candidate_exists ? btree_const_iterator(candidate_path, candidate_index) : end();
+        return lower_bound(key);
     }
 
     bool contains(const tkey& key) const

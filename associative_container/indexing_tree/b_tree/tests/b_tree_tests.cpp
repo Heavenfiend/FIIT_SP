@@ -362,14 +362,14 @@ TEST(bTreePositiveTests, test8)
 TEST(bTreePositiveTests, test9)
 {
     std::vector<B_tree<int, std::string>::value_type> expected_result =
-    {
-        {4,   "e"},
-        {15,  "c"},
-        {24,  "g"},
-        {45,  "k"},
-        {100, "f"},
-        {101, "j"},
-};
+            {
+                    {4,   "e"},
+                    {15,  "c"},
+                    {24,  "g"},
+                    {45,  "k"},
+                    {100, "f"},
+                    {101, "j"},
+            };
 
     B_tree<int, std::string, std::less<int>, 5> tree(std::less<int>(), nullptr);
 
@@ -386,9 +386,8 @@ TEST(bTreePositiveTests, test9)
     tree.emplace(193, std::string("l"));
     tree.emplace(534, std::string("m"));
 
-    auto b = tree.lower_bound(4);
-    auto e = tree.upper_bound(101);
-
+    auto b = tree.upper_bound(4);
+    auto e = tree.lower_bound(102);
     std::vector<decltype(tree)::value_type> actual_result(b, e);
 
     EXPECT_TRUE(compare_obtain_results(expected_result, actual_result));
