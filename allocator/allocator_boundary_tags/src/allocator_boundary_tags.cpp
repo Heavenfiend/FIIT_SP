@@ -8,7 +8,7 @@ struct allocator_meta {
     allocator_with_fit_mode::fit_mode allocate_fit_mode;
     size_t space_size;
     alignas(std::mutex) std::mutex mutex;
-    void* first_occupied; // ТЕПЕРЬ ТУТ ПЕРВЫЙ ЗАНЯТЫЙ БЛОК
+    void* first_occupied;
 };
 // достаем указатель на родительский аллокатор
 inline std::pmr::memory_resource*& get_parent_allocator(void* trusted_memory) {
