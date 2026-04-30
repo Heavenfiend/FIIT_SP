@@ -1,7 +1,6 @@
 #ifndef SYS_PROG_B_TREE_H
 #define SYS_PROG_B_TREE_H
 
-#include <algorithm>
 #include <functional>
 #include <initializer_list>
 #include <iterator>
@@ -52,6 +51,7 @@ public:
     };
 
 private:
+    // Секция 1: хранение узлов, аллокация и локальный поиск.
     static_assert(t >= 2, "B_tree minimum degree t must be at least 2");
 
     static constexpr std::size_t minimum_keys_in_node = t - 1;
@@ -61,11 +61,6 @@ private:
     inline bool compare_keys(const tkey& lhs, const tkey& rhs) const
     {
         return compare::operator()(lhs, rhs);
-    }
-
-    inline bool compare_pairs(const tree_data_type& lhs, const tree_data_type& rhs) const
-    {
-        return compare_keys(lhs.first, rhs.first);
     }
 
     bool equivalent_keys(const tkey& lhs, const tkey& rhs) const
@@ -91,11 +86,6 @@ private:
     node_allocator_type get_node_allocator() const
     {
         return node_allocator_type(_allocator);
-    }
-
-    pp_allocator<value_type> get_allocator() const noexcept
-    {
-        return _allocator;
     }
 
     btree_node* create_node()
@@ -274,28 +264,6 @@ private:
         }
     }
 
-    void append_in_order(const btree_node* node, std::vector<tree_data_type>& output) const
-    {
-        if (node == nullptr)
-        {
-            return;
-        }
-
-        for (std::size_t index = 0; index < node->_keys.size(); ++index)
-        {
-            if (!node->_pointers.empty())
-            {
-                append_in_order(node->_pointers[index], output);
-            }
-            output.push_back(node->_keys[index]);
-        }
-
-        if (!node->_pointers.empty())
-        {
-            append_in_order(node->_pointers[node->_keys.size()], output);
-        }
-    }
-
     void swap_with(B_tree& other) noexcept(std::is_nothrow_swappable_v<compare> && std::is_nothrow_swappable_v<pp_allocator<value_type>>)
     {
         using std::swap;
@@ -447,6 +415,7 @@ private:
     }
 
 public:
+    // Секция 2: итераторы.
     class btree_iterator;
     class btree_reverse_iterator;
     class btree_const_iterator;
@@ -868,6 +837,7 @@ public:
         }
     };
 
+    // Секция 3: время жизни, доступ, поиск и обход.
     explicit B_tree(const compare& cmp = compare(), pp_allocator<value_type> alloc = pp_allocator<value_type>())
         : compare(cmp), _allocator(std::move(alloc)), _root(nullptr), _size(0)
     {
@@ -1329,184 +1299,185 @@ public:
     }
 
 private:
+    // Секция 4: механика вставки и удаления.
     bool remove_from_node(btree_node* node, const tkey& key)
-{
-    if (node == nullptr)
     {
-        return false;
-    }
-
-    const std::size_t index = lower_index_in_node(node, key);
-
-    if (index < node->_keys.size() && equivalent_keys(node->_keys[index].first, key))
-    {
-        if (node->_pointers.empty())
+        if (node == nullptr)
         {
-            node->_keys.erase(node->_keys.begin() + static_cast<std::ptrdiff_t>(index));
-            return true;
+            return false;
         }
 
-        return remove_from_internal_node(node, index);
+        const std::size_t index = lower_index_in_node(node, key);
+
+        if (index < node->_keys.size() && equivalent_keys(node->_keys[index].first, key))
+        {
+            if (node->_pointers.empty())
+            {
+                node->_keys.erase(node->_keys.begin() + static_cast<std::ptrdiff_t>(index));
+                return true;
+            }
+
+            return remove_from_internal_node(node, index);
+        }
+
+        if (node->_pointers.empty())
+        {
+            return false;
+        }
+
+        const bool was_last_child = index == node->_keys.size();
+
+        if (node->_pointers[index]->_keys.size() == minimum_keys_in_node)
+        {
+            fill_child_before_descent(node, index);
+        }
+
+        if (was_last_child && index > node->_keys.size())
+        {
+            return remove_from_node(node->_pointers[index - 1], key);
+        }
+
+        return remove_from_node(node->_pointers[index], key);
     }
 
-    if (node->_pointers.empty())
+    bool remove_from_internal_node(btree_node* node, std::size_t index)
     {
-        return false;
+        const tkey key = node->_keys[index].first;
+
+        btree_node* left_child = node->_pointers[index];
+        btree_node* right_child = node->_pointers[index + 1];
+
+        if (left_child->_keys.size() >= t)
+        {
+            tree_data_type predecessor = get_predecessor(node, index);
+            const tkey predecessor_key = predecessor.first;
+
+            node->_keys[index] = std::move(predecessor);
+
+            return remove_from_node(left_child, predecessor_key);
+        }
+
+        if (right_child->_keys.size() >= t)
+        {
+            tree_data_type successor = get_successor(node, index);
+            const tkey successor_key = successor.first;
+
+            node->_keys[index] = std::move(successor);
+
+            return remove_from_node(right_child, successor_key);
+        }
+
+        merge_children(node, index);
+
+        return remove_from_node(left_child, key);
     }
 
-    const bool was_last_child = index == node->_keys.size();
-
-    if (node->_pointers[index]->_keys.size() == minimum_keys_in_node)
+    tree_data_type get_predecessor(btree_node* node, std::size_t index) const
     {
-        fill_child_before_descent(node, index);
+        btree_node* current = node->_pointers[index];
+
+        while (!current->_pointers.empty())
+        {
+            current = current->_pointers.back();
+        }
+
+        return current->_keys.back();
     }
 
-    if (was_last_child && index > node->_keys.size())
+    tree_data_type get_successor(btree_node* node, std::size_t index) const
     {
-        return remove_from_node(node->_pointers[index - 1], key);
+        btree_node* current = node->_pointers[index + 1];
+
+        while (!current->_pointers.empty())
+        {
+            current = current->_pointers.front();
+        }
+
+        return current->_keys.front();
     }
 
-    return remove_from_node(node->_pointers[index], key);
-}
-
-bool remove_from_internal_node(btree_node* node, std::size_t index)
-{
-    const tkey key = node->_keys[index].first;
-
-    btree_node* left_child = node->_pointers[index];
-    btree_node* right_child = node->_pointers[index + 1];
-
-    if (left_child->_keys.size() >= t)
+    void fill_child_before_descent(btree_node* parent, std::size_t child_index)
     {
-        tree_data_type predecessor = get_predecessor(node, index);
-        const tkey predecessor_key = predecessor.first;
+        if (child_index > 0 && parent->_pointers[child_index - 1]->_keys.size() >= t)
+        {
+            borrow_from_previous(parent, child_index);
+            return;
+        }
 
-        node->_keys[index] = std::move(predecessor);
+        if (child_index + 1 < parent->_pointers.size() &&
+            parent->_pointers[child_index + 1]->_keys.size() >= t)
+        {
+            borrow_from_next(parent, child_index);
+            return;
+        }
 
-        return remove_from_node(left_child, predecessor_key);
+        if (child_index + 1 < parent->_pointers.size())
+        {
+            merge_children(parent, child_index);
+        }
+        else
+        {
+            merge_children(parent, child_index - 1);
+        }
     }
 
-    if (right_child->_keys.size() >= t)
+    void borrow_from_previous(btree_node* parent, std::size_t child_index)
     {
-        tree_data_type successor = get_successor(node, index);
-        const tkey successor_key = successor.first;
+        btree_node* child = parent->_pointers[child_index];
+        btree_node* sibling = parent->_pointers[child_index - 1];
 
-        node->_keys[index] = std::move(successor);
+        child->_keys.insert(child->_keys.begin(), std::move(parent->_keys[child_index - 1]));
 
-        return remove_from_node(right_child, successor_key);
+        if (!sibling->_pointers.empty())
+        {
+            child->_pointers.insert(child->_pointers.begin(), sibling->_pointers.back());
+            sibling->_pointers.pop_back();
+        }
+
+        parent->_keys[child_index - 1] = std::move(sibling->_keys.back());
+        sibling->_keys.pop_back();
     }
 
-    merge_children(node, index);
-
-    return remove_from_node(left_child, key);
-}
-
-tree_data_type get_predecessor(btree_node* node, std::size_t index) const
-{
-    btree_node* current = node->_pointers[index];
-
-    while (!current->_pointers.empty())
+    void borrow_from_next(btree_node* parent, std::size_t child_index)
     {
-        current = current->_pointers.back();
+        btree_node* child = parent->_pointers[child_index];
+        btree_node* sibling = parent->_pointers[child_index + 1];
+
+        child->_keys.push_back(std::move(parent->_keys[child_index]));
+
+        if (!sibling->_pointers.empty())
+        {
+            child->_pointers.push_back(sibling->_pointers.front());
+            sibling->_pointers.erase(sibling->_pointers.begin());
+        }
+
+        parent->_keys[child_index] = std::move(sibling->_keys.front());
+        sibling->_keys.erase(sibling->_keys.begin());
     }
 
-    return current->_keys.back();
-}
-
-tree_data_type get_successor(btree_node* node, std::size_t index) const
-{
-    btree_node* current = node->_pointers[index + 1];
-
-    while (!current->_pointers.empty())
+    void merge_children(btree_node* parent, std::size_t left_child_index)
     {
-        current = current->_pointers.front();
+        btree_node* left_child = parent->_pointers[left_child_index];
+        btree_node* right_child = parent->_pointers[left_child_index + 1];
+
+        left_child->_keys.push_back(std::move(parent->_keys[left_child_index]));
+
+        for (auto& key_value : right_child->_keys)
+        {
+            left_child->_keys.push_back(std::move(key_value));
+        }
+
+        for (btree_node* child : right_child->_pointers)
+        {
+            left_child->_pointers.push_back(child);
+        }
+
+        parent->_keys.erase(parent->_keys.begin() + static_cast<std::ptrdiff_t>(left_child_index));
+        parent->_pointers.erase(parent->_pointers.begin() + static_cast<std::ptrdiff_t>(left_child_index + 1));
+
+        right_child->_pointers.clear();
+        destroy_node(right_child);
     }
-
-    return current->_keys.front();
-}
-
-void fill_child_before_descent(btree_node* parent, std::size_t child_index)
-{
-    if (child_index > 0 && parent->_pointers[child_index - 1]->_keys.size() >= t)
-    {
-        borrow_from_previous(parent, child_index);
-        return;
-    }
-
-    if (child_index + 1 < parent->_pointers.size() &&
-        parent->_pointers[child_index + 1]->_keys.size() >= t)
-    {
-        borrow_from_next(parent, child_index);
-        return;
-    }
-
-    if (child_index + 1 < parent->_pointers.size())
-    {
-        merge_children(parent, child_index);
-    }
-    else
-    {
-        merge_children(parent, child_index - 1);
-    }
-}
-
-void borrow_from_previous(btree_node* parent, std::size_t child_index)
-{
-    btree_node* child = parent->_pointers[child_index];
-    btree_node* sibling = parent->_pointers[child_index - 1];
-
-    child->_keys.insert(child->_keys.begin(), std::move(parent->_keys[child_index - 1]));
-
-    if (!sibling->_pointers.empty())
-    {
-        child->_pointers.insert(child->_pointers.begin(), sibling->_pointers.back());
-        sibling->_pointers.pop_back();
-    }
-
-    parent->_keys[child_index - 1] = std::move(sibling->_keys.back());
-    sibling->_keys.pop_back();
-}
-
-void borrow_from_next(btree_node* parent, std::size_t child_index)
-{
-    btree_node* child = parent->_pointers[child_index];
-    btree_node* sibling = parent->_pointers[child_index + 1];
-
-    child->_keys.push_back(std::move(parent->_keys[child_index]));
-
-    if (!sibling->_pointers.empty())
-    {
-        child->_pointers.push_back(sibling->_pointers.front());
-        sibling->_pointers.erase(sibling->_pointers.begin());
-    }
-
-    parent->_keys[child_index] = std::move(sibling->_keys.front());
-    sibling->_keys.erase(sibling->_keys.begin());
-}
-
-void merge_children(btree_node* parent, std::size_t left_child_index)
-{
-    btree_node* left_child = parent->_pointers[left_child_index];
-    btree_node* right_child = parent->_pointers[left_child_index + 1];
-
-    left_child->_keys.push_back(std::move(parent->_keys[left_child_index]));
-
-    for (auto& key_value : right_child->_keys)
-    {
-        left_child->_keys.push_back(std::move(key_value));
-    }
-
-    for (btree_node* child : right_child->_pointers)
-    {
-        left_child->_pointers.push_back(child);
-    }
-
-    parent->_keys.erase(parent->_keys.begin() + static_cast<std::ptrdiff_t>(left_child_index));
-    parent->_pointers.erase(parent->_pointers.begin() + static_cast<std::ptrdiff_t>(left_child_index + 1));
-
-    right_child->_pointers.clear();
-    destroy_node(right_child);
-}
 
     void insert_into_subtree(btree_node* node, tree_data_type data)
     {
@@ -1574,13 +1545,6 @@ void merge_children(btree_node* parent, std::size_t left_child_index)
 
         ++_size;
         return {find(search_key), true};
-    }
-
-    bool key_is_in_vector(const tkey& key, const std::vector<tkey>& keys) const
-    {
-        return std::any_of(keys.begin(), keys.end(), [this, &key](const tkey& candidate) {
-            return equivalent_keys(key, candidate);
-        });
     }
 
 public:
@@ -1760,18 +1724,5 @@ template <
     typename U = std::pair<const tkey, tvalue>>
 B_tree(std::initializer_list<std::pair<tkey, tvalue>> data, const compare& cmp = compare(), pp_allocator<U> = pp_allocator<U>())
     -> B_tree<tkey, tvalue, compare, t>;
-
-template <typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
-bool compare_pairs(const typename B_tree<tkey, tvalue, compare, t>::tree_data_type& lhs,
-                   const typename B_tree<tkey, tvalue, compare, t>::tree_data_type& rhs)
-{
-    return compare{}(lhs.first, rhs.first);
-}
-
-template <typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
-bool compare_keys(const tkey& lhs, const tkey& rhs)
-{
-    return compare{}(lhs, rhs);
-}
 
 #endif
