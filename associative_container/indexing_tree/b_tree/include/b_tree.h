@@ -17,7 +17,6 @@
 #include <boost/container/static_vector.hpp>
 
 #include <associative_container.h>
-#include <not_implemented.h>
 #include <pp_allocator.h>
 
 template <typename tkey, typename tvalue, comparator<tkey> compare = std::less<tkey>, std::size_t t = 5>
@@ -189,22 +188,46 @@ private:
 
     std::size_t lower_index_in_node(const btree_node* node, const tkey& key) const
     {
-        std::size_t index = 0;
-        while (index < node->_keys.size() && compare_keys(node->_keys[index].first, key))
+        std::size_t left = 0;
+        std::size_t right = node->_keys.size();
+
+        while (left < right)
         {
-            ++index;
+            const std::size_t middle = left + (right - left) / 2;
+
+            if (compare_keys(node->_keys[middle].first, key))
+            {
+                left = middle + 1;
+            }
+            else
+            {
+                right = middle;
+            }
         }
-        return index;
+
+        return left;
     }
 
     std::size_t upper_index_in_node(const btree_node* node, const tkey& key) const
     {
-        std::size_t index = 0;
-        while (index < node->_keys.size() && !compare_keys(key, node->_keys[index].first))
+        std::size_t left = 0;
+        std::size_t right = node->_keys.size();
+
+        while (left < right)
         {
-            ++index;
+            const std::size_t middle = left + (right - left) / 2;
+
+            if (!compare_keys(key, node->_keys[middle].first))
+            {
+                left = middle + 1;
+            }
+            else
+            {
+                right = middle;
+            }
         }
-        return index;
+
+        return left;
     }
 
     void split_child(btree_node* parent, std::size_t child_index)
